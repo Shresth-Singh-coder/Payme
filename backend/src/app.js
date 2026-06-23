@@ -1,8 +1,10 @@
 const express = require('express');
 const cookieParser = require("cookie-parser");
+const cors = require("cors");
 
 const app = express();
 
+app.use(cors());
 app.use(express.json());
 app.use(cookieParser());
 
@@ -10,6 +12,7 @@ app.use(cookieParser());
 const authRoutes = require("../src/routes/auth.routes");
 const accountRouter = require("../src/routes/account.routes")
 const transactionRoutes = require("../src/routes/transaction.routes")
+
 
 app.get("/", (req,res) => {
     res.json({

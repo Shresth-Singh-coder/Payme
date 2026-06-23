@@ -32,11 +32,17 @@ async function createTransaction(req, res) {
     }
 
     const fromUserAccount = await accountModel.findOne({
-        _id: fromAccount,
+        $or: [
+            { _id: mongoose.isValidObjectId(fromAccount) ? fromAccount : null },
+            { accountNumber: fromAccount }
+        ]
     })
 
     const toUserAccount = await accountModel.findOne({
-        _id: toAccount,
+        $or: [
+            { _id: mongoose.isValidObjectId(toAccount) ? toAccount : null },
+            { accountNumber: toAccount }
+        ]
     })
 
     if (!fromUserAccount || !toUserAccount) {
@@ -96,7 +102,7 @@ async function createTransaction(req, res) {
      */
     const balance = await fromUserAccount.getBalance()
 
-    if (balance < amount) {
+    if (fromUserAccount.accountNumber !== "0000000000" && balance < amount) {
         return res.status(400).json({
             message: `Insufficient balance. Current balance is ${balance}. Requested amount is ${amount}`
         })
@@ -113,26 +119,22 @@ async function createTransaction(req, res) {
         session.startTransaction()
 
         transaction = (await transactionModel.create([ {
-            fromAccount,
-            toAccount,
+            fromAccount: fromUserAccount._id,
+            toAccount: toUserAccount._id,
             amount,
             idempotencyKey,
             status: "PENDING"
         } ], { session }))[ 0 ]
 
         const debitLedgerEntry = await ledgerModel.create([ {
-            account: fromAccount,
+            account: fromUserAccount._id,
             amount: amount,
             transaction: transaction._id,
             type: "DEBIT"
         } ], { session })
 
-        await (() => {
-            return new Promise((resolve) => setTimeout(resolve, 15 * 1000));
-        })()
-
         const creditLedgerEntry = await ledgerModel.create([ {
-            account: toAccount,
+            account: toUserAccount._id,
             amount: amount,
             transaction: transaction._id,
             type: "CREDIT"
@@ -176,7 +178,10 @@ async function createInitialFundsTransaction(req, res) {
     }
 
     const toUserAccount = await accountModel.findOne({
-        _id: toAccount,
+        $or: [
+            { _id: mongoose.isValidObjectId(toAccount) ? toAccount : null },
+            { accountNumber: toAccount }
+        ]
     })
 
     if (!toUserAccount) {
@@ -201,7 +206,7 @@ async function createInitialFundsTransaction(req, res) {
 
     const transaction = new transactionModel({
         fromAccount: fromUserAccount._id,
-        toAccount,
+        toAccount: toUserAccount._id,
         amount,
         idempotencyKey,
         status: "PENDING"
@@ -215,7 +220,7 @@ async function createInitialFundsTransaction(req, res) {
     } ], { session })
 
     const creditLedgerEntry = await ledgerModel.create([ {
-        account: toAccount,
+        account: toUserAccount._id,
         amount: amount,
         transaction: transaction._id,
         type: "CREDIT"
@@ -235,7 +240,98 @@ async function createInitialFundsTransaction(req, res) {
 
 }
 
+async function getUserTransactions(req, res) {
+    try {
+        const { accountId } = req.query;
+        let query = {};
+
+        if (accountId) {
+            if (!mongoose.isValidObjectId(accountId)) {
+                return res.status(400).json({
+                    message: "Invalid account ID format"
+                });
+            }
+            const account = await accountModel.findOne({ _id: accountId, user: req.user._id });
+            if (!account) {
+                return res.status(404).json({
+                    message: "Account not found or unauthorized access"
+                });
+            }
+            query = {
+                $or: [
+                    { fromAccount: accountId },
+                    { toAccount: accountId }
+                ]
+            };
+        } else {
+            const accounts = await accountModel.find({ user: req.user._id });
+            const accountIds = accounts.map(acc => acc._id);
+            query = {
+                $or: [
+                    { fromAccount: { $in: accountIds } },
+                    { toAccount: { $in: accountIds } }
+                ]
+            };
+        }
+
+        const transactions = await transactionModel.find(query).sort({ createdAt: -1 });
+
+        const enrichedTransactions = await Promise.all(
+            transactions.map(async (tx) => {
+                const fromAcc = await accountModel.findById(tx.fromAccount).populate("user", "name");
+                const toAcc = await accountModel.findById(tx.toAccount).populate("user", "name");
+
+                let category = "Transfer";
+                let description = "Direct Ledger Post";
+
+                if (fromAcc && toAcc) {
+                    if (fromAcc.user?._id?.toString() === req.user._id.toString() && toAcc.user?._id?.toString() === req.user._id.toString()) {
+                        category = "Transfer";
+                        description = `Internal Transfer from ${fromAcc.accountNumber} to ${toAcc.accountNumber}`;
+                    } else if (fromAcc.user?._id?.toString() === req.user._id.toString()) {
+                        category = "Shopping";
+                        description = `Sent to ${toAcc.accountNumber} (${toAcc.user?.name || 'External'})`;
+                    } else {
+                        category = "Salary";
+                        description = `Received from ${fromAcc.accountNumber} (${fromAcc.user?.name || 'System'})`;
+                    }
+                } else if (fromAcc) {
+                    category = "Other";
+                    description = `Sent to External ID: ${tx.toAccount}`;
+                } else if (toAcc) {
+                    category = "Salary";
+                    description = `Received from External ID: ${tx.fromAccount}`;
+                }
+
+                return {
+                    _id: tx._id,
+                    fromAccount: tx.fromAccount,
+                    fromName: fromAcc ? (fromAcc.accountNumber === "0000000000" ? "System Core Vault" : fromAcc.user?.name) : "External Source",
+                    fromAccountNumber: fromAcc ? fromAcc.accountNumber : "SYSTEM",
+                    toAccount: tx.toAccount,
+                    toName: toAcc ? (toAcc.accountNumber === "0000000000" ? "System Core Vault" : toAcc.user?.name) : "External Target",
+                    toAccountNumber: toAcc ? toAcc.accountNumber : tx.toAccount,
+                    amount: tx.amount,
+                    category: category,
+                    description: description,
+                    status: tx.status,
+                    createdAt: tx.createdAt
+                };
+            })
+        );
+
+        res.status(200).json({
+            transactions: enrichedTransactions
+        });
+    } catch (err) {
+        res.status(500).json({
+            message: "Failed to fetch transactions: " + err.message
+        });
+    }
+}
+
 module.exports = {
     createTransaction,
-    createInitialFundsTransaction
+    createInitialFundsTransaction,
+    getUserTransactions
 }
