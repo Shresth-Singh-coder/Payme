@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import { API_BASE_URL } from '../config';
 
-const API_BASE = "http://localhost:3000/api";
+const API_BASE = `${API_BASE_URL}/api`;
 
 export default function Home({ currentUser, onLogout }) {
   const navigate = useNavigate();
@@ -43,7 +44,7 @@ export default function Home({ currentUser, onLogout }) {
   useEffect(() => {
     const checkServer = async () => {
       try {
-        await axios.get("http://localhost:3000/");
+        await axios.get(API_BASE_URL);
         setIsBackendOnline(true);
         setMode('backend');
       } catch (err) {

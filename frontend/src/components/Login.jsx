@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
+import { API_BASE_URL } from '../config';
 
 export default function Login({ onSubmit }) {
   const [email, setEmail] = useState('');
@@ -18,7 +19,7 @@ export default function Login({ onSubmit }) {
     setError('');
     
     try {
-      const res = await axios.post("http://localhost:3000/api/auth/login", { email, password });
+      const res = await axios.post(`${API_BASE_URL}/api/auth/login`, { email, password });
       if (res.data && res.data.token) {
         localStorage.setItem('payme_token', res.data.token);
         localStorage.setItem('payme_user', JSON.stringify(res.data.user));

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
+import { API_BASE_URL } from '../config';
 
 export default function Signup({ onSubmit }) {
   const [name, setName] = useState('');
@@ -29,7 +30,7 @@ export default function Signup({ onSubmit }) {
     const sendData = async () => {
       try {
         const data = { name, email, password };
-        const res = await axios.post("http://localhost:3000/api/auth/register", data);
+        const res = await axios.post(`${API_BASE_URL}/api/auth/register`, data);
         if (res.data && res.data.token) {
           localStorage.setItem('payme_token', res.data.token);
           localStorage.setItem('payme_user', JSON.stringify(res.data.user));

@@ -4,6 +4,7 @@ import Login from './components/Login';
 import Signup from './components/Signup';
 import Home from './components/Home';
 import axios from 'axios';
+import { API_BASE_URL } from './config';
 import './App.css';
 
 // Retro Money Logo SVG Component
@@ -57,7 +58,7 @@ function App() {
     try {
       const token = localStorage.getItem('payme_token');
       if (token) {
-        await axios.post("http://localhost:3000/api/auth/logout", {}, {
+        await axios.post(`${API_BASE_URL}/api/auth/logout`, {}, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
       }
