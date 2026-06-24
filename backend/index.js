@@ -7,4 +7,6 @@ console.log("enter");
 dbconnect();
 console.log("exit");
 
-export default app;
+app.listen(3000, () => {
+    console.log("Server listenning on port 3000!");
+})
