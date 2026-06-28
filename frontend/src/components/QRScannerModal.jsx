@@ -5,6 +5,7 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
   const [scanTab, setScanTab] = useState('camera'); // 'camera' or 'upload'
   const [step, setStep] = useState('scan'); // 'scan', 'form', 'pay'
   const [error, setError] = useState('');
+  const [diagnosticText, setDiagnosticText] = useState('Camera: Off');
   
   // Scanned / Extracted UPI Data
   const [upiData, setUpiData] = useState({
@@ -29,6 +30,7 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
     stopCamera();
     setStep('scan');
     setError('');
+    setDiagnosticText('Camera: Off');
     setPaymentAmount('');
     setPaymentNote('');
     setUpiData({ pa: '', pn: '', am: '', tn: '' });
@@ -38,14 +40,27 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
   // Start Camera Access
   const startCamera = async () => {
     setError('');
+    setDiagnosticText('Requesting permissions...');
     try {
       if (streamRef.current) {
         stopCamera();
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
-      });
+      let stream;
+      try {
+        // Attempt to get environment (rear) camera first
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 640 }, height: { ideal: 480 } }
+        });
+        setDiagnosticText('Connected (Environment/Rear)');
+      } catch (constraintsErr) {
+        console.warn("Could not start camera with environment constraints, trying fallback", constraintsErr);
+        // Fallback to any default camera (e.g. laptop webcam / user-facing camera)
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: true
+        });
+        setDiagnosticText('Connected (Default/Webcam)');
+      }
 
       streamRef.current = stream;
       if (videoRef.current) {
@@ -56,7 +71,8 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
       }
     } catch (err) {
       console.error("Camera access error:", err);
-      setError('Camera access denied. Please allow camera permissions or upload a QR image.');
+      setError('Camera access denied or no camera found. Please check permissions or upload a QR image.');
+      setDiagnosticText('Access Denied');
       setScanTab('upload');
     }
   };
@@ -74,6 +90,7 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    setDiagnosticText('Stopped');
   };
 
   // Scan frame by frame
@@ -87,21 +104,39 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
       const canvas = canvasRef.current || document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       
-      const width = videoRef.current.videoWidth;
-      const height = videoRef.current.videoHeight;
+      let width = videoRef.current.videoWidth;
+      let height = videoRef.current.videoHeight;
+      
+      // Performance optimization: scale down frame before running jsQR
+      const maxDecodeSize = 480;
+      if (width > maxDecodeSize) {
+        const ratio = maxDecodeSize / width;
+        width = maxDecodeSize;
+        height = Math.floor(height * ratio);
+      }
+
       canvas.width = width;
       canvas.height = height;
 
-      ctx.drawImage(videoRef.current, 0, 0, width, height);
-      const imageData = ctx.getImageData(0, 0, width, height);
-      const code = jsQR(imageData.data, width, height, {
-        inversionAttempts: 'dontInvert',
-      });
+      try {
+        ctx.drawImage(videoRef.current, 0, 0, width, height);
+        const imageData = ctx.getImageData(0, 0, width, height);
+        
+        // Scan with attemptBoth to handle both regular and inverted QR codes
+        const code = jsQR(imageData.data, width, height, {
+          inversionAttempts: 'attemptBoth',
+        });
 
-      if (code) {
-        console.log("QR Code decoded successfully:", code.data);
-        handleDecodedData(code.data);
-        return; // Stop scanning once decoded
+        if (code) {
+          console.log("QR Code decoded successfully:", code.data);
+          setDiagnosticText('QR Found! Decoding...');
+          handleDecodedData(code.data);
+          return; // Stop scanning loop
+        } else {
+          setDiagnosticText(`Active (${videoRef.current.videoWidth}x${videoRef.current.videoHeight}) - Scanning...`);
+        }
+      } catch (err) {
+        console.error("Frame scanning error:", err);
       }
     }
     animationFrameIdRef.current = requestAnimationFrame(scanTick);
@@ -117,44 +152,81 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
     reader.onload = (event) => {
       const img = new Image();
       img.onload = () => {
-        const canvas = canvasRef.current || document.createElement('canvas');
+        const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx.drawImage(img, 0, 0);
+        
+        let width = img.width;
+        let height = img.height;
+        
+        // Downscale very large photos/screenshots for easier QR decoding (max 800px)
+        const maxDecodeSize = 800;
+        if (width > maxDecodeSize || height > maxDecodeSize) {
+          if (width > height) {
+            height = Math.round((height * maxDecodeSize) / width);
+            width = maxDecodeSize;
+          } else {
+            width = Math.round((width * maxDecodeSize) / height);
+            height = maxDecodeSize;
+          }
+        }
+        
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(img, 0, 0, width, height);
         
         try {
-          const imageData = ctx.getImageData(0, 0, img.width, img.height);
-          const code = jsQR(imageData.data, img.width, img.height);
+          const imageData = ctx.getImageData(0, 0, width, height);
+          
+          // Use attemptBoth inversionAttempts for uploaded images as well
+          const code = jsQR(imageData.data, width, height, {
+            inversionAttempts: 'attemptBoth'
+          });
+          
           if (code) {
+            console.log("Uploaded QR Code decoded successfully:", code.data);
             handleDecodedData(code.data);
           } else {
-            setError('Could not decode QR code. Please ensure the QR code is clearly visible and centered.');
+            setError('Could not decode QR code. Please make sure the QR is clear, well-lit, and occupies a significant part of the image.');
           }
         } catch (err) {
-          setError('Failed to process image file.');
+          console.error("Image decoding error:", err);
+          setError('Failed to extract image pixels. Please try another image.');
         }
+      };
+      img.onerror = () => {
+        setError('Failed to load image file.');
       };
       img.src = event.target.result;
     };
+    reader.onerror = () => {
+      setError('Failed to read upload file.');
+    };
     reader.readAsDataURL(file);
+    
+    // Clear input value so same file can be scanned again if needed
+    e.target.value = '';
   };
 
   // Parse UPI URL or UPI text
   const handleDecodedData = (data) => {
     stopCamera();
     
-    // Check if it's a UPI deep link
-    if (data.startsWith('upi://pay')) {
+    const trimmedData = data.trim();
+    const lowerData = trimmedData.toLowerCase();
+
+    // Handle standard upi://pay protocol (case-insensitive)
+    if (lowerData.startsWith('upi://pay')) {
       try {
-        const urlParams = new URLSearchParams(data.substring(data.indexOf('?')));
+        const queryPart = trimmedData.substring(trimmedData.indexOf('?'));
+        const urlParams = new URLSearchParams(queryPart);
         const pa = urlParams.get('pa') || '';
         const pn = urlParams.get('pn') || '';
         const am = urlParams.get('am') || '';
         const tn = urlParams.get('tn') || '';
 
         if (!pa) {
-          setError('Invalid QR: UPI ID (pa) missing.');
+          setError('Invalid QR: UPI ID (pa) parameter is missing.');
+          setStep('scan');
           return;
         }
 
@@ -163,21 +235,49 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
         setPaymentNote(tn);
         setStep('form');
       } catch (err) {
-        setError('Error parsing UPI QR data.');
+        setError('Error parsing UPI QR data parameters.');
+        setStep('scan');
       }
-    } else {
-      // Check if it's a raw VPA/UPI ID (e.g. name@bank)
+    } 
+    // Handle Web URLs that contain UPI parameters (e.g. https://bhimupi.org/pay?pa=merchant@upi)
+    else if (lowerData.startsWith('http://') || lowerData.startsWith('https://')) {
+      try {
+        const urlObj = new URL(trimmedData);
+        const pa = urlObj.searchParams.get('pa') || '';
+        const pn = urlObj.searchParams.get('pn') || '';
+        const am = urlObj.searchParams.get('am') || '';
+        const tn = urlObj.searchParams.get('tn') || '';
+
+        if (pa) {
+          setUpiData({ pa, pn, am, tn });
+          setPaymentAmount(am);
+          setPaymentNote(tn);
+          setStep('form');
+        } else {
+          setError('Decoded URL does not contain a UPI VPA parameter (pa). URL: ' + trimmedData.substring(0, 40));
+          setStep('scan');
+        }
+      } catch (err) {
+        setError('Failed to parse decoded URL parameters.');
+        setStep('scan');
+      }
+    }
+    // Handle raw VPA / UPI ID (e.g. merchant@okaxis)
+    else {
       const vpaRegex = /^[\w.\-_]+@[\w.\-_]+$/;
-      if (vpaRegex.test(data.trim())) {
+      if (vpaRegex.test(trimmedData)) {
         setUpiData({
-          pa: data.trim(),
-          pn: data.trim().split('@')[0].toUpperCase(),
+          pa: trimmedData,
+          pn: trimmedData.split('@')[0].toUpperCase(),
           am: '',
           tn: ''
         });
+        setPaymentAmount('');
+        setPaymentNote('');
         setStep('form');
       } else {
-        setError('Scanned data is not a valid UPI QR link. Data: ' + data.substring(0, 50));
+        setError('QR content is not a valid UPI payee format. Content: ' + trimmedData.substring(0, 50));
+        setStep('scan');
       }
     }
   };
@@ -303,6 +403,18 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
                   <p className="text-[10px] font-mono text-gray-500 text-center font-bold">
                     Point your device camera at any standard UPI merchant QR code.
                   </p>
+
+                  {/* Diagnostic Console Panel */}
+                  <div className="bg-black text-[#94FFD8] border-2 border-black p-2 font-mono text-[9px] uppercase tracking-wide space-y-0.5 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+                    <div className="flex justify-between items-center border-b border-gray-800 pb-0.5 mb-1">
+                      <span className="font-bold">SYSTEM DIAGNOSTICS:</span>
+                      <span className="bg-[#94FFD8] text-black px-1 font-black animate-pulse">MONITOR</span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-x-2 text-[8px]">
+                      <div>STATE: <span className="text-white">{diagnosticText}</span></div>
+                      <div>DECODER: <span className="text-white">jsQR v1.4</span></div>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-4">
