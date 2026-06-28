@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import jsQR from 'jsqr';
 
-export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
+export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa }) {
   const [scanTab, setScanTab] = useState('camera'); // 'camera' or 'upload'
   const [step, setStep] = useState('scan'); // 'scan', 'form', 'pay'
   const [error, setError] = useState('');
@@ -282,15 +282,22 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
     }
   };
 
+  // Handle manual VPA pre-population
+  useEffect(() => {
+    if (isOpen && initialVpa) {
+      handleDecodedData(initialVpa);
+    }
+  }, [isOpen, initialVpa]);
+
   // Toggle tab / Start camera accordingly
   useEffect(() => {
-    if (isOpen && scanTab === 'camera' && step === 'scan') {
+    if (isOpen && scanTab === 'camera' && step === 'scan' && !initialVpa) {
       startCamera();
     } else {
       stopCamera();
     }
     return () => stopCamera();
-  }, [isOpen, scanTab, step]);
+  }, [isOpen, scanTab, step, initialVpa]);
 
   if (!isOpen) return null;
 

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
 import QRScannerModal from './QRScannerModal';
+import BudgetAnalytics from './BudgetAnalytics';
 
 const API_BASE = `${API_BASE_URL}/api`;
 
@@ -16,6 +17,7 @@ export default function Home({ currentUser, onLogout }) {
   const [isTransacting, setIsTransacting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [activeConsole, setActiveConsole] = useState('qr'); // 'bank' or 'qr'
 
   // Account State
   const [accounts, setAccounts] = useState([]);
@@ -32,21 +34,26 @@ export default function Home({ currentUser, onLogout }) {
 
   // QR Scanner Modal State
   const [isQRModalOpen, setIsQRModalOpen] = useState(false);
+  const [manualVpaInput, setManualVpaInput] = useState('');
+  const [selectedManualVpa, setSelectedManualVpa] = useState('');
 
   // Handle QR scanner auto-fill callback
   const handleQRAutoFill = ({ toAccount: scannedVpa, amount: scannedAmount, description: scannedDesc }) => {
     setIsExternal(true);
     setExternalAccount(scannedVpa);
     setAmount(scannedAmount || '');
-    setCategory('Transfer');
+    setCategory('Other');
     setDescription(scannedDesc || '');
     
-    // Attempt to pre-select a source account if none selected
-    if (!fromAccount && accounts.length > 0) {
+    // Pre-select QR Pay Wallet as default source account
+    const qrWallet = accounts.find(acc => acc.type === 'QR Payments' || acc.name === 'QR Pay Wallet');
+    if (qrWallet) {
+      setFromAccount(qrWallet._id);
+    } else if (!fromAccount && accounts.length > 0) {
       setFromAccount(accounts[0]._id);
     }
     
-    setSuccess(`Auto-filled details for payment to ${scannedVpa}.`);
+    setSuccess(`Auto-filled details from QR into transfer form.`);
   };
 
   // Transaction List State
@@ -105,29 +112,30 @@ export default function Home({ currentUser, onLogout }) {
       sbAccounts = [
         { _id: 'acc_ch_7402', name: 'Main Checking', type: 'Checking', currency: 'INR', balance: 50000, accountNumber: '5820491047', status: 'ACTIVE' },
         { _id: 'acc_sa_9104', name: 'Retro Savings', type: 'Savings', currency: 'INR', balance: 120000, accountNumber: '9104829471', status: 'ACTIVE' },
-        { _id: 'acc_wa_1120', name: 'Pocket Wallet', type: 'Wallet', currency: 'INR', balance: 8500, accountNumber: '1120485910', status: 'ACTIVE' }
+        { _id: 'acc_wa_1120', name: 'Pocket Wallet', type: 'Wallet', currency: 'INR', balance: 8500, accountNumber: '1120485910', status: 'ACTIVE' },
+        { _id: 'acc_qr_9901', name: 'QR Pay Wallet', type: 'QR Payments', currency: 'INR', balance: 15000, accountNumber: '9901482710', status: 'ACTIVE' }
       ];
       localStorage.setItem(userKey, JSON.stringify(sbAccounts));
+    } else {
+      // Ensure QR Pay Wallet is present for existing accounts
+      const hasQrWallet = sbAccounts.some(acc => acc.type === 'QR Payments' || acc.name === 'QR Pay Wallet');
+      if (!hasQrWallet) {
+        sbAccounts.push({
+          _id: 'acc_qr_9901',
+          name: 'QR Pay Wallet',
+          type: 'QR Payments',
+          currency: 'INR',
+          balance: 15000,
+          accountNumber: '9901482710',
+          status: 'ACTIVE'
+        });
+        localStorage.setItem(userKey, JSON.stringify(sbAccounts));
+      }
     }
 
     let sbTxs = JSON.parse(localStorage.getItem(txKey));
-    if (!sbTxs || sbTxs.length === 0) {
-      sbTxs = [
-        {
-          _id: 'tx_sb_001',
-          fromAccount: 'acc_sa_9104',
-          fromName: 'Retro Savings',
-          fromAccountNumber: '9104829471',
-          toAccount: 'acc_ch_7402',
-          toName: 'Main Checking',
-          toAccountNumber: '5820491047',
-          amount: 15000,
-          category: 'Transfer',
-          description: 'Transfer to Checking wallet',
-          status: 'COMPLETED',
-          createdAt: new Date(Date.now() - 86400000).toISOString()
-        }
-      ];
+    if (!sbTxs) {
+      sbTxs = [];
       localStorage.setItem(txKey, JSON.stringify(sbTxs));
     }
 
@@ -337,7 +345,43 @@ export default function Home({ currentUser, onLogout }) {
     }
   };
 
-  const filteredTransactions = transactions.filter(tx => {
+  // Filter accounts, balances, and transactions depending on the active console tab
+  const bankAccounts = accounts.filter(acc => acc.type !== 'QR Payments' && acc.name !== 'QR Pay Wallet');
+  const qrAccounts = accounts.filter(acc => acc.type === 'QR Payments' || acc.name === 'QR Pay Wallet');
+
+  const bankBalance = bankAccounts.reduce((sum, acc) => sum + acc.balance, 0);
+  const qrBalance = qrAccounts.reduce((sum, acc) => sum + acc.balance, 0);
+
+  // Split transactions based on source account
+  const bankTransactions = transactions.filter(tx => {
+    const fromAcc = accounts.find(a => a._id === tx.fromAccount || a.accountNumber === tx.fromAccountNumber);
+    if (!fromAcc) return true; // Default system seeds go to bank
+    return fromAcc.type !== 'QR Payments' && fromAcc.name !== 'QR Pay Wallet';
+  });
+
+  const qrTransactions = transactions.filter(tx => {
+    const fromAcc = accounts.find(a => a._id === tx.fromAccount || a.accountNumber === tx.fromAccountNumber);
+    const toAcc = accounts.find(a => a._id === tx.toAccount || a.accountNumber === tx.toAccountNumber);
+    
+    const isFromQr = fromAcc && (fromAcc.type === 'QR Payments' || fromAcc.name === 'QR Pay Wallet');
+    const isToQr = toAcc && (toAcc.type === 'QR Payments' || toAcc.name === 'QR Pay Wallet');
+    const isExternalToQr = tx.toAccountNumber === '9901482710' || tx.toAccount === 'acc_qr_9901';
+
+    return isFromQr || isToQr || isExternalToQr;
+  });
+
+  const qrTotalExpense = qrTransactions
+    .filter(tx => tx.fromAccount === 'acc_qr_9901' || tx.fromAccountNumber === '9901482710')
+    .reduce((sum, tx) => sum + tx.amount, 0);
+
+  const qrTotalReceived = qrTransactions
+    .filter(tx => tx.toAccount === 'acc_qr_9901' || tx.toAccountNumber === '9901482710')
+    .reduce((sum, tx) => sum + tx.amount, 0);
+
+  const currentConsoleTransactions = activeConsole === 'bank' ? bankTransactions : qrTransactions;
+  const currentConsoleAccounts = activeConsole === 'bank' ? bankAccounts : qrAccounts;
+
+  const filteredTransactions = currentConsoleTransactions.filter(tx => {
     if (selectedAccountFilter !== 'ALL') {
       const filteredAcc = accounts.find(a => a._id === selectedAccountFilter);
       const filterAccNum = filteredAcc ? filteredAcc.accountNumber : selectedAccountFilter;
@@ -362,7 +406,10 @@ export default function Home({ currentUser, onLogout }) {
     return true;
   });
 
-  const getAccountColor = (index) => {
+  const getAccountColor = (acc, index) => {
+    if (acc.type === 'QR Payments' || acc.name === 'QR Pay Wallet') {
+      return 'bg-amber-300'; // QR specific color
+    }
     const colors = ['bg-yellow-300', 'bg-[#94FFD8]', 'bg-[#FF76CE]', 'bg-cyan-300'];
     return colors[index % colors.length];
   };
@@ -411,40 +458,118 @@ export default function Home({ currentUser, onLogout }) {
             OPERATOR: {currentUser?.name || 'USER'} ({currentUser?.email}) | MODE: <span className="bg-white px-1 border border-black uppercase">{mode === 'backend' ? 'Live DB' : 'Sandbox'}</span>
           </p>
         </div>
-        <button
-          onClick={onLogout}
-          className="bg-black text-white hover:bg-red-500 hover:text-black border-2 border-black px-4 py-1.5 font-mono text-xs font-black uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
-        >
-          DISCONNECT.EXE
-        </button>
-      </div>
-
-      {/* COMBINED BALANCE CARD */}
-      <div className="bg-white border-4 border-black p-4 mb-6 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
-        <span className="text-[10px] font-mono font-bold text-gray-500 uppercase tracking-wider block">COMBINED VALUE RESERVES</span>
-        <div className="text-3xl font-black mt-1">
-          {accounts.some(a => a.accountNumber === "0000000000") ? "₹ Unlimited" : `₹ ${totalBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+        <div className="flex gap-2">
+          {mode === 'sandbox' && (
+            <button
+              onClick={() => {
+                if (window.confirm("RESET ALL SANDBOX WALLETS, TRANSACTIONS AND BUDGET LIMITS?")) {
+                  const email = currentUser?.email || 'retro@payme.sys';
+                  localStorage.removeItem(`payme_sb_accs_${email}`);
+                  localStorage.removeItem(`payme_sb_txs_${email}`);
+                  localStorage.removeItem(`payme_sb_budgets_${email}`);
+                  window.location.reload();
+                }
+              }}
+              className="bg-white text-black hover:bg-rose-500 hover:text-white border-2 border-black px-4 py-1.5 font-mono text-xs font-black uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
+            >
+              RESET_CONSOLE.EXE
+            </button>
+          )}
+          <button
+            onClick={onLogout}
+            className="bg-black text-white hover:bg-red-500 hover:text-black border-2 border-black px-4 py-1.5 font-mono text-xs font-black uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
+          >
+            DISCONNECT.EXE
+          </button>
         </div>
       </div>
 
-      {/* TWO COLUMN GRID FOR ACCOUNTS & TRANSFER PANEL */}
+      {/* CONSOLE TAB SWITCHER */}
+      <div className="flex gap-2 mb-6">
+        <button
+          onClick={() => {
+            setActiveConsole('bank');
+            setSelectedAccountFilter('ALL');
+          }}
+          className={`flex-grow md:flex-initial px-5 py-2.5 font-mono text-xs font-black uppercase border-3 border-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] active:shadow-[1px_1px_0px_0px_rgba(0,0,0,1)] cursor-pointer transition-all ${
+            activeConsole === 'bank' ? 'bg-[#94FFD8] text-black font-extrabold' : 'bg-white text-gray-500 hover:bg-gray-100'
+          }`}
+        >
+          BANK_CONSOLE.SYS
+        </button>
+        <button
+          onClick={() => {
+            setActiveConsole('qr');
+            setSelectedAccountFilter('ALL');
+          }}
+          className={`flex-grow md:flex-initial px-5 py-2.5 font-mono text-xs font-black uppercase border-3 border-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] active:shadow-[1px_1px_0px_0px_rgba(0,0,0,1)] cursor-pointer transition-all ${
+            activeConsole === 'qr' ? 'bg-yellow-300 text-black font-extrabold' : 'bg-white text-gray-500 hover:bg-gray-100'
+          }`}
+        >
+          QR_UPI_PAYMENTS.SYS
+        </button>
+      </div>
+
+      {/* RESERVES CARD */}
+      <div className="bg-white border-4 border-black p-4 mb-6 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
+        <span className="text-[10px] font-mono font-bold text-gray-500 uppercase tracking-wider block">
+          {activeConsole === 'bank' ? 'DOMESTIC BANKING RESERVES' : 'QR PAY ACTIVITY METRICS'}
+        </span>
+        
+        {activeConsole === 'bank' ? (
+          <div className="text-3xl font-black mt-1">
+            {accounts.some(a => a.accountNumber === "0000000000") ? "₹ Unlimited" : `₹ ${bankBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <div className="bg-rose-50 border-2 border-black p-3 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+              <span className="text-[9px] font-mono font-black text-rose-700 uppercase block">TOTAL QR EXPENSES (PAID)</span>
+              <div className="text-2xl font-black text-black mt-0.5">
+                ₹ {qrTotalExpense.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            </div>
+            <div className="bg-emerald-50 border-2 border-black p-3 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+              <span className="text-[9px] font-mono font-black text-emerald-700 uppercase block">TOTAL MONEY RECEIVED</span>
+              <div className="text-2xl font-black text-black mt-0.5">
+                ₹ {qrTotalReceived.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* BUDGET EXPENSE ANALYTICS PANEL */}
+      <div className="mb-6">
+        <BudgetAnalytics 
+          transactions={activeConsole === 'bank' ? bankTransactions : qrTransactions}
+          accounts={activeConsole === 'bank' ? bankAccounts : qrAccounts}
+          currentUser={currentUser}
+          budgetType={activeConsole}
+        />
+      </div>
+
+      {/* TWO COLUMN GRID FOR ACCOUNTS & ACTION PANELS */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
         {/* ACCOUNTS AREA (7 COLS) */}
         <div className="lg:col-span-7 space-y-6">
           <div className="bg-white border-4 border-black p-4 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
             <div className="flex justify-between items-center">
-              <h2 className="text-2xl font-black uppercase">Wallets</h2>
-              <button
-                onClick={() => setShowCreateForm(!showCreateForm)}
-                className="bg-black text-white hover:bg-yellow-300 hover:text-black border-2 border-black px-4 py-2 font-mono text-xs font-bold uppercase shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-x-[1px] active:translate-y-[1px] cursor-pointer"
-              >
-                {showCreateForm ? 'CANCEL' : 'CREATE_ACCOUNT'}
-              </button>
+              <h2 className="text-2xl font-black uppercase">
+                {activeConsole === 'bank' ? 'Bank Wallets' : 'QR Payment Wallet'}
+              </h2>
+              {activeConsole === 'bank' && (
+                <button
+                  onClick={() => setShowCreateForm(!showCreateForm)}
+                  className="bg-black text-white hover:bg-yellow-300 hover:text-black border-2 border-black px-4 py-2 font-mono text-xs font-bold uppercase shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-x-[1px] active:translate-y-[1px] cursor-pointer"
+                >
+                  {showCreateForm ? 'CANCEL' : 'CREATE_ACCOUNT'}
+                </button>
+              )}
             </div>
 
             {/* Simpler Add Account Form */}
-            {showCreateForm && (
+            {activeConsole === 'bank' && showCreateForm && (
               <form onSubmit={handleCreateAccount} className="mt-4 p-4 border-2 border-dashed border-black bg-amber-50 space-y-3">
                 <span className="bg-black text-pink-400 text-[9px] font-mono font-bold px-1.5 py-0.5 border border-black uppercase tracking-wider block w-max">
                   NEW_ACCOUNT
@@ -497,15 +622,15 @@ export default function Home({ currentUser, onLogout }) {
 
           {/* Accounts Cards Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {accounts.length === 0 ? (
+            {currentConsoleAccounts.length === 0 ? (
               <div className="col-span-full bg-white border-4 border-black border-dashed p-8 text-center">
                 <p className="font-mono text-xs font-bold text-gray-500 uppercase">NO_WALLETS_FOUND</p>
               </div>
             ) : (
-              accounts.map((acc, index) => (
+              currentConsoleAccounts.map((acc, index) => (
                 <div
                   key={acc._id}
-                  className={`${getAccountColor(index)} border-4 border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] relative flex flex-col justify-between h-36`}
+                  className={`${getAccountColor(acc, index)} border-4 border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] relative flex flex-col justify-between h-36`}
                 >
                   <div className="flex justify-between items-start">
                     <span className="bg-black text-white text-[8px] font-mono px-1.5 py-0.5 border border-black uppercase font-bold">
@@ -527,159 +652,241 @@ export default function Home({ currentUser, onLogout }) {
                 </div>
               ))
             )}
+
+            {activeConsole === 'qr' && (
+              <div className="bg-[#94FFD8] border-4 border-black p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] relative flex flex-col justify-between h-36">
+                <div className="flex justify-between items-start">
+                  <span className="bg-black text-white text-[8px] font-mono px-1.5 py-0.5 border border-black uppercase font-bold">INFO.TXT</span>
+                </div>
+                <h3 className="text-xs font-black uppercase text-black leading-none mt-1">
+                  QR PAYMENT FUNDING
+                </h3>
+                <p className="text-[9px] font-mono text-gray-800 leading-tight">
+                  Transfer funds from your Checking/Savings accounts using Bank Transfer to fund your QR Wallet.
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* TRANSACTION FORM (5 COLS) */}
+        {/* TRANSACTION ACTION COLUMN (5 COLS) */}
         <div className="lg:col-span-5">
-          <div className="bg-white border-4 border-black p-5 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
-            <span className="bg-black text-yellow-300 text-[10px] font-mono font-bold px-1.5 py-0.5 border border-black uppercase tracking-wider">
-              LEDGER_POSTING
-            </span>
-            <div className="flex justify-between items-center mt-1.5 mb-2">
-              <h2 className="text-2xl font-black uppercase leading-none">
-                Transfer Funds
+          {activeConsole === 'bank' ? (
+            /* PANEL 1: BANK TRANSFER (DOMESTIC LEDGER) */
+            <div className="bg-white border-4 border-black p-5 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)]">
+              <span className="bg-black text-[#94FFD8] text-[10px] font-mono font-bold px-1.5 py-0.5 border border-black uppercase tracking-wider">
+                LEDGER_POSTING
+              </span>
+              <h2 className="text-2xl font-black uppercase mt-1.5 leading-none mb-3">
+                Bank Transfer
               </h2>
-              <button
-                type="button"
-                onClick={() => setIsQRModalOpen(true)}
-                className="bg-yellow-300 text-black hover:bg-black hover:text-[#94FFD8] border-2 border-black px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-x-[1px] active:translate-y-[1px] cursor-pointer flex items-center gap-1.5"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
-                </svg>
-                SCAN QR
-              </button>
-            </div>
 
-            <form onSubmit={handleMakeTransaction} className="mt-4 space-y-4">
-              <div>
-                <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">From Account:</label>
-                <select
-                  required
-                  value={fromAccount}
-                  onChange={(e) => setFromAccount(e.target.value)}
-                  className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
-                >
-                  <option value="">-- SELECT WALLET --</option>
-                  {accounts.map(acc => (
-                    <option key={acc._id} value={acc._id}>
-                      {acc.accountNumber === "0000000000" ? "System Core Vault" : (acc.name || 'Wallet')} (No: {acc.accountNumber}) - {acc.accountNumber === "0000000000" ? "₹ Unlimited" : `₹${acc.balance.toFixed(2)}`}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <form onSubmit={handleMakeTransaction} className="mt-4 space-y-4">
+                <div>
+                  <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">From Account:</label>
+                  <select
+                    required
+                    value={fromAccount}
+                    onChange={(e) => setFromAccount(e.target.value)}
+                    className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                  >
+                    <option value="">-- SELECT WALLET --</option>
+                    {bankAccounts.map(acc => (
+                      <option key={acc._id} value={acc._id}>
+                        {acc.accountNumber === "0000000000" ? "System Core Vault" : (acc.name || 'Wallet')} (No: {acc.accountNumber}) - {acc.accountNumber === "0000000000" ? "₹ Unlimited" : `₹${acc.balance.toFixed(2)}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              {/* Mode switch */}
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsExternal(false)}
-                  className={`flex-1 border-2 border-black py-1 font-mono text-[9px] font-bold uppercase cursor-pointer ${
-                    !isExternal ? 'bg-black text-[#94FFD8]' : 'bg-white hover:bg-gray-100'
-                  }`}
-                >
-                  INTERNAL
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsExternal(true)}
-                  className={`flex-1 border-2 border-black py-1 font-mono text-[9px] font-bold uppercase cursor-pointer ${
-                    isExternal ? 'bg-black text-[#94FFD8]' : 'bg-white hover:bg-gray-100'
-                  }`}
-                >
-                  EXTERNAL TO NO
-                </button>
-              </div>
+                {/* Mode switch */}
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsExternal(false)}
+                    className={`flex-1 border-2 border-black py-1 font-mono text-[9px] font-bold uppercase cursor-pointer ${
+                      !isExternal ? 'bg-black text-[#94FFD8]' : 'bg-white hover:bg-gray-100'
+                    }`}
+                  >
+                    INTERNAL
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsExternal(true)}
+                    className={`flex-1 border-2 border-black py-1 font-mono text-[9px] font-bold uppercase cursor-pointer ${
+                      isExternal ? 'bg-black text-[#94FFD8]' : 'bg-white hover:bg-gray-100'
+                    }`}
+                  >
+                    EXTERNAL TO NO
+                  </button>
+                </div>
 
-              <div>
-                <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">To Account:</label>
-                {isExternal ? (
+                <div>
+                  <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">To Account:</label>
+                  {isExternal ? (
+                    <input
+                      type="text"
+                      required
+                      placeholder="Enter 10-digit account number"
+                      value={externalAccount}
+                      onChange={(e) => setExternalAccount(e.target.value)}
+                      className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                    />
+                  ) : (
+                    <select
+                      required
+                      value={toAccount}
+                      onChange={(e) => setToAccount(e.target.value)}
+                      className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                    >
+                      <option value="">-- SELECT TARGET WALLET --</option>
+                      {bankAccounts
+                        .filter(acc => acc._id !== fromAccount)
+                        .map(acc => (
+                          <option key={acc._id} value={acc._id}>
+                            {acc.name || 'Wallet'} (No: {acc.accountNumber || acc._id.slice(-6)})
+                          </option>
+                        ))}
+                    </select>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Amount (₹):</label>
+                    <input
+                      type="number"
+                      required
+                      min="0.01"
+                      step="0.01"
+                      placeholder="0.00"
+                      value={amount}
+                      onChange={(e) => setAmount(e.target.value)}
+                      className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Category:</label>
+                    <select
+                      value={category}
+                      onChange={(e) => setCategory(e.target.value)}
+                      className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                    >
+                      <option value="Transfer">Transfer</option>
+                      <option value="Food & Dining">Food & Dining</option>
+                      <option value="Groceries">Groceries</option>
+                      <option value="Bills & Utilities">Bills & Utilities</option>
+                      <option value="Shopping">Shopping</option>
+                      <option value="Entertainment">Entertainment</option>
+                      <option value="Travel & Transport">Travel & Transport</option>
+                      <option value="Salary">Salary</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Memo:</label>
                   <input
                     type="text"
-                    required
-                    placeholder="Enter 10-digit account number"
-                    value={externalAccount}
-                    onChange={(e) => setExternalAccount(e.target.value)}
+                    placeholder="Memo / Description"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
                     className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
                   />
-                ) : (
-                  <select
-                    required
-                    value={toAccount}
-                    onChange={(e) => setToAccount(e.target.value)}
-                    className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
-                  >
-                    <option value="">-- SELECT TARGET WALLET --</option>
-                    {accounts
-                      .filter(acc => acc._id !== fromAccount)
-                      .map(acc => (
-                        <option key={acc._id} value={acc._id}>
-                          {acc.name || 'Wallet'} (No: {acc.accountNumber || acc._id.slice(-6)})
-                        </option>
-                      ))}
-                  </select>
+                </div>
+
+                {error && (
+                  <div className="bg-rose-100 border-2 border-black p-2 font-mono text-[10px] font-bold text-red-700">
+                    ⚠️ {error}
+                  </div>
                 )}
+
+                <button
+                  type="submit"
+                  disabled={isTransacting}
+                  className="w-full bg-black text-[#94FFD8] border-3 border-black py-2.5 font-extrabold uppercase tracking-widest text-sm shadow-[4px_4px_0px_0px_rgba(255,118,206,1)] hover:-translate-x-1 hover:-translate-y-1 hover:shadow-[6px_6px_0px_0px_rgba(255,118,206,1)] active:translate-x-1 active:translate-y-1 active:shadow-[1px_1px_0px_0px_rgba(255,118,206,1)] transition-all cursor-pointer"
+                >
+                  {isTransacting ? 'TRANSACTING...' : 'POST_TRANSFER.EXE'}
+                </button>
+              </form>
+            </div>
+          ) : (
+            /* PANEL 2: QR & UPI PAYMENTS */
+            <div className="bg-white border-4 border-black p-5 shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] space-y-4">
+              <div className="flex justify-between items-center pb-2 border-b-2 border-dashed border-black">
+                <div>
+                  <span className="bg-black text-yellow-300 text-[10px] font-mono font-bold px-1.5 py-0.5 border border-black uppercase tracking-wider">
+                    UPI.SYS
+                  </span>
+                  <h2 className="text-xl font-black uppercase mt-1 leading-none text-black">
+                    QR & UPI Pay
+                  </h2>
+                </div>
+                <svg className="w-8 h-8 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                </svg>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* Scan QR Trigger Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedManualVpa('');
+                  setIsQRModalOpen(true);
+                }}
+                className="w-full bg-yellow-300 text-black hover:bg-black hover:text-[#94FFD8] border-3 border-black py-3 font-extrabold uppercase tracking-widest text-xs shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-[1px] active:translate-y-[1px] cursor-pointer flex items-center justify-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+                SCAN MERCHANT QR CODE
+              </button>
+
+              {/* Manual VPA Entry Divider */}
+              <div className="flex items-center my-3">
+                <div className="flex-grow border-t border-dashed border-gray-300"></div>
+                <span className="mx-3 text-[8px] font-mono font-bold text-gray-400 uppercase tracking-widest">OR PAY VIA UPI ID</span>
+                <div className="flex-grow border-t border-dashed border-gray-300"></div>
+              </div>
+
+              {/* Manual VPA Input Form */}
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (!manualVpaInput.trim()) {
+                  setError('Please enter a valid UPI address.');
+                  return;
+                }
+                const trimmed = manualVpaInput.trim();
+                if (!trimmed.includes('@')) {
+                  setError('Invalid VPA: Must contain "@" (e.g. store@bank)');
+                  return;
+                }
+                setError('');
+                setSelectedManualVpa(trimmed);
+                setIsQRModalOpen(true);
+              }} className="space-y-3">
                 <div>
-                  <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Amount (₹):</label>
+                  <label className="block text-[9px] font-bold uppercase text-gray-500 mb-1 font-mono">UPI ID / VPA Address:</label>
                   <input
-                    type="number"
-                    required
-                    min="0.01"
-                    step="0.01"
-                    placeholder="0.00"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                    type="text"
+                    placeholder="e.g. merchant@okaxis, friend@upi"
+                    value={manualVpaInput}
+                    onChange={(e) => setManualVpaInput(e.target.value)}
+                    className="w-full bg-white border-2 border-black p-2 font-semibold text-xs focus:outline-none"
                   />
                 </div>
-                <div>
-                  <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Category:</label>
-                  <select
-                    value={category}
-                    onChange={(e) => setCategory(e.target.value)}
-                    className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
-                  >
-                    <option value="Transfer">Transfer</option>
-                    <option value="Food">Food</option>
-                    <option value="Bills">Bills</option>
-                    <option value="Entertainment">Entertainment</option>
-                    <option value="Shopping">Shopping</option>
-                    <option value="Salary">Salary</option>
-                    <option value="Other">Other</option>
-                  </select>
-                </div>
-              </div>
 
-              <div>
-                <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Memo:</label>
-                <input
-                  type="text"
-                  placeholder="Memo / Description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
-                />
-              </div>
-
-              {error && (
-                <div className="bg-rose-100 border-2 border-black p-2 font-mono text-[10px] font-bold text-red-700">
-                  ⚠️ {error}
-                </div>
-              )}
-
-              <button
-                type="submit"
-                disabled={isTransacting}
-                className="w-full bg-black text-[#94FFD8] border-3 border-black py-2.5 font-extrabold uppercase tracking-widest text-sm shadow-[4px_4px_0px_0px_rgba(255,118,206,1)] hover:-translate-x-1 hover:-translate-y-1 hover:shadow-[6px_6px_0px_0px_rgba(255,118,206,1)] active:translate-x-1 active:translate-y-1 active:shadow-[1px_1px_0px_0px_rgba(255,118,206,1)] transition-all cursor-pointer"
-              >
-                {isTransacting ? 'TRANSACTING...' : 'POST_TRANSFER.EXE'}
-              </button>
-            </form>
-          </div>
+                <button
+                  type="submit"
+                  className="w-full bg-[#94FFD8] text-black hover:bg-black hover:text-[#94FFD8] border-3 border-black py-2 font-extrabold uppercase tracking-wide text-xs shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
+                >
+                  PROCEED TO PAY
+                </button>
+              </form>
+            </div>
+          )}
         </div>
 
       </div>
@@ -716,10 +923,12 @@ export default function Home({ currentUser, onLogout }) {
             >
               <option value="ALL">ALL CATEGORIES</option>
               <option value="TRANSFER">TRANSFERS</option>
-              <option value="FOOD">FOOD</option>
-              <option value="BILLS">BILLS</option>
-              <option value="ENTERTAINMENT">ENTERTAINMENT</option>
+              <option value="FOOD & DINING">FOOD & DINING</option>
+              <option value="GROCERIES">GROCERIES</option>
+              <option value="BILLS & UTILITIES">BILLS & UTILITIES</option>
               <option value="SHOPPING">SHOPPING</option>
+              <option value="ENTERTAINMENT">ENTERTAINMENT</option>
+              <option value="TRAVEL & TRANSPORT">TRAVEL & TRANSPORT</option>
               <option value="SALARY">SALARY</option>
               <option value="OTHER">OTHERS</option>
             </select>
@@ -787,8 +996,12 @@ export default function Home({ currentUser, onLogout }) {
 
       <QRScannerModal
         isOpen={isQRModalOpen}
-        onClose={() => setIsQRModalOpen(false)}
+        onClose={() => {
+          setIsQRModalOpen(false);
+          setSelectedManualVpa('');
+        }}
         onAutoFill={handleQRAutoFill}
+        initialVpa={selectedManualVpa}
       />
     </div>
   );
