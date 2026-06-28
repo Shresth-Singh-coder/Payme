@@ -10,6 +10,18 @@ const CATEGORY_COLORS = {
   'Other': '#94A3B8'                // Slate
 };
 
+const getCategoryColor = (category) => {
+  if (CATEGORY_COLORS[category]) return CATEGORY_COLORS[category];
+  
+  // Stable color hash function matching neobrutalism aesthetics
+  let hash = 0;
+  for (let i = 0; i < category.length; i++) {
+    hash = category.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  const h = Math.abs(hash) % 360;
+  return `hsl(${h}, 85%, 60%)`;
+};
+
 export default function BudgetAnalytics({ transactions, accounts }) {
   // Identify user's account IDs/numbers for debit tracking
   const userAccountIds = accounts.map(a => a._id);
@@ -32,14 +44,13 @@ export default function BudgetAnalytics({ transactions, accounts }) {
     // If the source of funds is one of the user's accounts, count it as a debit/expense
     const isUserDebit = userAccountIds.includes(tx.fromAccount) || userAccountNums.includes(tx.fromAccountNumber);
     
-    if (isUserDebit) {
+    if (isUserDebit && tx.status === 'COMPLETED') {
       const cat = tx.category || 'Other';
-      if (categoryExpenses[cat] !== undefined) {
+      if (cat !== 'Transfer' && cat !== 'Salary') {
+        if (categoryExpenses[cat] === undefined) {
+          categoryExpenses[cat] = 0;
+        }
         categoryExpenses[cat] += tx.amount;
-        totalExpenses += tx.amount;
-      } else if (cat !== 'Transfer' && cat !== 'Salary') {
-        // Fallback for custom category names
-        categoryExpenses['Other'] += tx.amount;
         totalExpenses += tx.amount;
       }
     }
@@ -56,7 +67,7 @@ export default function BudgetAnalytics({ transactions, accounts }) {
     .map(([category, value]) => {
       const percent = totalExpenses > 0 ? (value / totalExpenses) * 100 : 0;
       const strokeLength = (percent / 100) * circumference;
-      const strokeOffset = circumference - strokeLength + (accumulatedPercent / 100) * circumference;
+      const strokeOffset = -(accumulatedPercent / 100) * circumference;
       accumulatedPercent += percent;
       
       return {
@@ -65,7 +76,7 @@ export default function BudgetAnalytics({ transactions, accounts }) {
         percent,
         strokeLength,
         strokeOffset,
-        color: CATEGORY_COLORS[category] || '#94A3B8'
+        color: getCategoryColor(category)
       };
     });
 
@@ -97,7 +108,7 @@ export default function BudgetAnalytics({ transactions, accounts }) {
                   fill="transparent"
                   stroke={seg.color}
                   strokeWidth="14"
-                  strokeDasharray={circumference}
+                  strokeDasharray={`${seg.strokeLength} ${circumference}`}
                   strokeDashoffset={seg.strokeOffset}
                   className="transition-all duration-500 hover:stroke-[16] cursor-pointer"
                   style={{ transformOrigin: '60px 60px' }}
@@ -147,7 +158,7 @@ export default function BudgetAnalytics({ transactions, accounts }) {
             return (
               <div key={category} className="bg-amber-50/30 border-2 border-black p-2.5 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] flex justify-between items-center hover:bg-amber-50/60 transition-colors">
                 <div className="flex items-center gap-2">
-                  <span className="w-3 h-3 border border-black shrink-0" style={{ backgroundColor: CATEGORY_COLORS[category] }} />
+                  <span className="w-3 h-3 border border-black shrink-0" style={{ backgroundColor: getCategoryColor(category) }} />
                   <span className="text-[10px] font-mono font-black uppercase text-black">{category}</span>
                 </div>
                 <span className="text-xs font-black text-black">

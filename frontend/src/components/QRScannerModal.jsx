@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import jsQR from 'jsqr';
 
-export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa }) {
+export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa, onPostPayment, onUpdateStatus }) {
   const [scanTab, setScanTab] = useState('camera'); // 'camera' or 'upload'
   const [step, setStep] = useState('scan'); // 'scan', 'form', 'pay'
   const [error, setError] = useState('');
@@ -18,6 +18,9 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa
   // Input states for custom payment
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentNote, setPaymentNote] = useState('');
+  const [paymentCategory, setPaymentCategory] = useState('Other');
+  const [customCategory, setCustomCategory] = useState('');
+  const [activeTxId, setActiveTxId] = useState('');
 
   // Camera stream refs
   const videoRef = useRef(null);
@@ -33,6 +36,9 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa
     setDiagnosticText('Camera: Off');
     setPaymentAmount('');
     setPaymentNote('');
+    setPaymentCategory('Other');
+    setCustomCategory('');
+    setActiveTxId('');
     setUpiData({ pa: '', pn: '', am: '', tn: '' });
     onClose();
   };
@@ -314,21 +320,28 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa
 
     // Trigger redirection to UPI app
     window.location.href = upiUrl;
+
+    const finalCategory = paymentCategory === 'CUSTOM' && customCategory.trim() 
+      ? customCategory.trim() 
+      : paymentCategory;
+
+    const txId = 'tx_sb_qr_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+    setActiveTxId(txId);
+
+    // Auto-post transaction to the ledger with PENDING status
+    if (onPostPayment) {
+      onPostPayment({
+        txId,
+        toVpa: upiData.pa,
+        amount: paymentAmount,
+        description: paymentNote || `UPI to ${upiData.pn || 'Merchant'}`,
+        category: finalCategory,
+        status: 'PENDING'
+      });
+    }
     
     // Advance to display instructions/desktop QR code fallback
     setStep('pay');
-  };
-
-  // Handle auto-fill back to console
-  const handleAutoFillConsole = () => {
-    if (onAutoFill) {
-      onAutoFill({
-        toAccount: upiData.pa,
-        amount: paymentAmount,
-        description: paymentNote || `UPI to ${upiData.pn}`
-      });
-    }
-    handleClose();
   };
 
   return (
@@ -495,6 +508,38 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa
               </div>
 
               <div>
+                <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Category:</label>
+                <select
+                  value={paymentCategory}
+                  onChange={(e) => setPaymentCategory(e.target.value)}
+                  className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                >
+                  <option value="Food & Dining">Food & Dining</option>
+                  <option value="Groceries">Groceries</option>
+                  <option value="Bills & Utilities">Bills & Utilities</option>
+                  <option value="Shopping">Shopping</option>
+                  <option value="Entertainment">Entertainment</option>
+                  <option value="Travel & Transport">Travel & Transport</option>
+                  <option value="Other">Other</option>
+                  <option value="CUSTOM">[+] Add Custom Category...</option>
+                </select>
+              </div>
+
+              {paymentCategory === 'CUSTOM' && (
+                <div>
+                  <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Custom Category Name:</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Health, Education, Subscriptions"
+                    value={customCategory}
+                    onChange={(e) => setCustomCategory(e.target.value)}
+                    className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                  />
+                </div>
+              )}
+
+              <div>
                 <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Note / Description (Optional):</label>
                 <input 
                   type="text"
@@ -553,7 +598,31 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa
                 <span className="text-[9px] font-mono text-black font-black uppercase block pt-2">₹ {parseFloat(paymentAmount).toFixed(2)} to {upiData.pn || 'Merchant'}</span>
               </div>
 
-              <div className="space-y-2 max-w-xs mx-auto">
+              <div className="space-y-2.5 max-w-xs mx-auto">
+                <button
+                  onClick={() => {
+                    if (onUpdateStatus) {
+                      onUpdateStatus(activeTxId, 'COMPLETED');
+                    }
+                    handleClose();
+                  }}
+                  className="w-full border-2 border-black bg-emerald-400 hover:bg-emerald-500 text-black py-2.5 font-mono text-xs font-black uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
+                >
+                  ✓ CONFIRM SUCCESS & SETTLE
+                </button>
+
+                <button
+                  onClick={() => {
+                    if (onUpdateStatus) {
+                      onUpdateStatus(activeTxId, 'FAILED');
+                    }
+                    handleClose();
+                  }}
+                  className="w-full border-2 border-black bg-rose-400 hover:bg-rose-500 text-black py-2.5 font-mono text-xs font-black uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
+                >
+                  ✕ CANCEL & VOID PAYMENT
+                </button>
+
                 <button
                   onClick={() => {
                     navigator.clipboard.writeText(upiUrl);
@@ -562,30 +631,6 @@ export default function QRScannerModal({ isOpen, onClose, onAutoFill, initialVpa
                   className="w-full border-2 border-black bg-white hover:bg-gray-100 text-black py-1.5 font-mono text-xs font-bold uppercase cursor-pointer"
                 >
                   COPY PAYMENT LINK
-                </button>
-
-                <button
-                  onClick={handleAutoFillConsole}
-                  className="w-full border-2 border-black bg-yellow-300 hover:bg-yellow-400 text-black py-2 font-mono text-xs font-black uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
-                >
-                  AUTO-FILL CONSOLE FORM
-                </button>
-              </div>
-
-              <div className="pt-2 border-t-2 border-dashed border-black flex justify-between">
-                <button
-                  type="button"
-                  onClick={() => setStep('form')}
-                  className="border-2 border-black bg-white hover:bg-gray-100 text-black px-4 py-1.5 font-mono text-xs font-bold uppercase cursor-pointer"
-                >
-                  BACK TO FORM
-                </button>
-                <button
-                  type="button"
-                  onClick={handleClose}
-                  className="border-2 border-black bg-black text-white hover:bg-red-500 hover:text-white px-4 py-1.5 font-mono text-xs font-bold uppercase cursor-pointer"
-                >
-                  CLOSE
                 </button>
               </div>
             </div>

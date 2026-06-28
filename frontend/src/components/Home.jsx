@@ -345,6 +345,126 @@ export default function Home({ currentUser, onLogout }) {
     }
   };
 
+  // Direct QR/UPI transaction posting
+  const handlePostQRTransaction = async ({ txId, toVpa, amount, description, category, status = 'PENDING' }) => {
+    const qrWallet = accounts.find(acc => acc.type === 'QR Payments' || acc.name === 'QR Pay Wallet') || accounts[0];
+    if (!qrWallet) {
+      setError('No QR Pay Wallet found to source payment.');
+      return;
+    }
+
+    const txAmount = parseFloat(amount);
+    if (isNaN(txAmount) || txAmount <= 0) {
+      setError('Invalid transaction amount.');
+      return;
+    }
+
+    setIsTransacting(true);
+    const idKey = 'idempotency_qr_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+    const finalCategory = category || 'Other';
+
+    if (mode === 'sandbox') {
+      setTimeout(() => {
+        const txKey = `payme_sb_txs_${(currentUser?.email || 'retro@payme.sys')}`;
+
+        const newTx = {
+          _id: txId,
+          fromAccount: qrWallet._id,
+          fromName: qrWallet.name,
+          fromAccountNumber: qrWallet.accountNumber,
+          toAccount: toVpa,
+          toName: toVpa.split('@')[0].toUpperCase() + ' (UPI Merchant)',
+          toAccountNumber: toVpa,
+          amount: txAmount,
+          category: finalCategory,
+          description: description || 'QR Code Payment',
+          status: status, // PENDING by default
+          createdAt: new Date().toISOString()
+        };
+
+        const updatedTxs = [newTx, ...transactions];
+        localStorage.setItem(txKey, JSON.stringify(updatedTxs));
+        setTransactions(updatedTxs);
+
+        setIsTransacting(false);
+        setSuccess(`QR Payment of ₹${txAmount} initialized. Status: PENDING.`);
+      }, 500);
+    } else {
+      try {
+        const payload = {
+          fromAccount: qrWallet._id,
+          toAccount: toVpa,
+          amount: txAmount,
+          idempotencyKey: idKey,
+          category: finalCategory,
+          status: status,
+          description: description || 'QR Code Payment'
+        };
+
+        await axios.post(`${API_BASE}/transactions`, payload);
+        setSuccess(`QR Payment of ₹${txAmount} initialized.`);
+        loadBackendData(selectedAccountFilter);
+      } catch (err) {
+        setError('QR Payment failed: ' + (err.response?.data?.message || err.message));
+      } finally {
+        setIsTransacting(false);
+      }
+    }
+  };
+
+  const handleUpdateQRTransactionStatus = async (txId, newStatus) => {
+    setIsTransacting(true);
+
+    if (mode === 'sandbox') {
+      setTimeout(() => {
+        const userKey = `payme_sb_accs_${(currentUser?.email || 'retro@payme.sys')}`;
+        const txKey = `payme_sb_txs_${(currentUser?.email || 'retro@payme.sys')}`;
+
+        const tx = transactions.find(t => t._id === txId);
+        if (!tx) {
+          setError('Transaction not found.');
+          setIsTransacting(false);
+          return;
+        }
+
+        const updatedTxs = transactions.map(t => {
+          if (t._id === txId) return { ...t, status: newStatus };
+          return t;
+        });
+
+        let updatedAccounts = accounts;
+        if (newStatus === 'COMPLETED') {
+          updatedAccounts = accounts.map(acc => {
+            if (acc._id === tx.fromAccount) return { ...acc, balance: acc.balance - tx.amount };
+            return acc;
+          });
+          localStorage.setItem(userKey, JSON.stringify(updatedAccounts));
+          setAccounts(updatedAccounts);
+          setTotalBalance(updatedAccounts.reduce((sum, acc) => sum + acc.balance, 0));
+        }
+
+        localStorage.setItem(txKey, JSON.stringify(updatedTxs));
+        setTransactions(updatedTxs);
+
+        setIsTransacting(false);
+        if (newStatus === 'COMPLETED') {
+          setSuccess(`QR Payment of ₹${tx.amount} completed successfully.`);
+        } else {
+          setSuccess(`QR Payment of ₹${tx.amount} cancelled / marked as FAILED.`);
+        }
+      }, 500);
+    } else {
+      try {
+        setSuccess(`QR Payment status updated to: ${newStatus}`);
+        loadBackendData(selectedAccountFilter);
+      } catch (err) {
+        setError('Failed to update status: ' + err.message);
+      } finally {
+        setIsTransacting(false);
+      }
+    }
+  };
+
   // Filter accounts, balances, and transactions depending on the active console tab
   const bankAccounts = accounts.filter(acc => acc.type !== 'QR Payments' && acc.name !== 'QR Pay Wallet');
   const qrAccounts = accounts.filter(acc => acc.type === 'QR Payments' || acc.name === 'QR Pay Wallet');
@@ -371,11 +491,11 @@ export default function Home({ currentUser, onLogout }) {
   });
 
   const qrTotalExpense = qrTransactions
-    .filter(tx => tx.fromAccount === 'acc_qr_9901' || tx.fromAccountNumber === '9901482710')
+    .filter(tx => (tx.fromAccount === 'acc_qr_9901' || tx.fromAccountNumber === '9901482710') && tx.status === 'COMPLETED')
     .reduce((sum, tx) => sum + tx.amount, 0);
 
   const qrTotalReceived = qrTransactions
-    .filter(tx => tx.toAccount === 'acc_qr_9901' || tx.toAccountNumber === '9901482710')
+    .filter(tx => (tx.toAccount === 'acc_qr_9901' || tx.toAccountNumber === '9901482710') && tx.status === 'COMPLETED')
     .reduce((sum, tx) => sum + tx.amount, 0);
 
   const currentConsoleTransactions = activeConsole === 'bank' ? bankTransactions : qrTransactions;
@@ -405,6 +525,16 @@ export default function Home({ currentUser, onLogout }) {
     }
     return true;
   });
+
+  const getStatusBadge = (status) => {
+    if (status === 'COMPLETED') {
+      return <span className="bg-emerald-200 text-emerald-800 border border-emerald-500 px-1.5 py-0.5 text-[8px] font-mono font-extrabold uppercase">COMPLETED</span>;
+    }
+    if (status === 'PENDING') {
+      return <span className="bg-amber-200 text-amber-800 border border-amber-500 px-1.5 py-0.5 text-[8px] font-mono font-extrabold uppercase animate-pulse">PENDING</span>;
+    }
+    return <span className="bg-rose-200 text-rose-800 border border-rose-500 px-1.5 py-0.5 text-[8px] font-mono font-extrabold uppercase">FAILED</span>;
+  };
 
   const getAccountColor = (acc, index) => {
     if (acc.type === 'QR Payments' || acc.name === 'QR Pay Wallet') {
@@ -982,9 +1112,7 @@ export default function Home({ currentUser, onLogout }) {
                       ₹ {tx.amount.toFixed(2)}
                     </td>
                     <td className="py-3 text-center">
-                      <span className="bg-emerald-200 text-emerald-800 border border-emerald-500 px-1 text-[8px] font-mono font-extrabold uppercase">
-                        {tx.status || 'COMPLETED'}
-                      </span>
+                      {getStatusBadge(tx.status)}
                     </td>
                   </tr>
                 ))
@@ -1002,6 +1130,8 @@ export default function Home({ currentUser, onLogout }) {
         }}
         onAutoFill={handleQRAutoFill}
         initialVpa={selectedManualVpa}
+        onPostPayment={handlePostQRTransaction}
+        onUpdateStatus={handleUpdateQRTransactionStatus}
       />
     </div>
   );
