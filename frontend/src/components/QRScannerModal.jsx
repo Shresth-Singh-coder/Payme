@@ -1,0 +1,489 @@
+import React, { useState, useEffect, useRef } from 'react';
+import jsQR from 'jsqr';
+
+export default function QRScannerModal({ isOpen, onClose, onAutoFill }) {
+  const [scanTab, setScanTab] = useState('camera'); // 'camera' or 'upload'
+  const [step, setStep] = useState('scan'); // 'scan', 'form', 'pay'
+  const [error, setError] = useState('');
+  
+  // Scanned / Extracted UPI Data
+  const [upiData, setUpiData] = useState({
+    pa: '', // Payee VPA / UPI ID
+    pn: '', // Payee Name
+    am: '', // Amount
+    tn: '', // Transaction Note
+  });
+
+  // Input states for custom payment
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentNote, setPaymentNote] = useState('');
+
+  // Camera stream refs
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const animationFrameIdRef = useRef(null);
+
+  // Close modal and cleanup camera
+  const handleClose = () => {
+    stopCamera();
+    setStep('scan');
+    setError('');
+    setPaymentAmount('');
+    setPaymentNote('');
+    setUpiData({ pa: '', pn: '', am: '', tn: '' });
+    onClose();
+  };
+
+  // Start Camera Access
+  const startCamera = async () => {
+    setError('');
+    try {
+      if (streamRef.current) {
+        stopCamera();
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+      });
+
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.setAttribute('playsinline', 'true'); // Required for iOS
+        videoRef.current.play();
+        animationFrameIdRef.current = requestAnimationFrame(scanTick);
+      }
+    } catch (err) {
+      console.error("Camera access error:", err);
+      setError('Camera access denied. Please allow camera permissions or upload a QR image.');
+      setScanTab('upload');
+    }
+  };
+
+  // Stop Camera Access
+  const stopCamera = () => {
+    if (animationFrameIdRef.current) {
+      cancelAnimationFrame(animationFrameIdRef.current);
+      animationFrameIdRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  // Scan frame by frame
+  const scanTick = () => {
+    if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) {
+      animationFrameIdRef.current = requestAnimationFrame(scanTick);
+      return;
+    }
+
+    if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
+      const canvas = canvasRef.current || document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      
+      const width = videoRef.current.videoWidth;
+      const height = videoRef.current.videoHeight;
+      canvas.width = width;
+      canvas.height = height;
+
+      ctx.drawImage(videoRef.current, 0, 0, width, height);
+      const imageData = ctx.getImageData(0, 0, width, height);
+      const code = jsQR(imageData.data, width, height, {
+        inversionAttempts: 'dontInvert',
+      });
+
+      if (code) {
+        console.log("QR Code decoded successfully:", code.data);
+        handleDecodedData(code.data);
+        return; // Stop scanning once decoded
+      }
+    }
+    animationFrameIdRef.current = requestAnimationFrame(scanTick);
+  };
+
+  // Handle uploaded QR image
+  const handleImageUpload = (e) => {
+    setError('');
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = canvasRef.current || document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+        
+        try {
+          const imageData = ctx.getImageData(0, 0, img.width, img.height);
+          const code = jsQR(imageData.data, img.width, img.height);
+          if (code) {
+            handleDecodedData(code.data);
+          } else {
+            setError('Could not decode QR code. Please ensure the QR code is clearly visible and centered.');
+          }
+        } catch (err) {
+          setError('Failed to process image file.');
+        }
+      };
+      img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Parse UPI URL or UPI text
+  const handleDecodedData = (data) => {
+    stopCamera();
+    
+    // Check if it's a UPI deep link
+    if (data.startsWith('upi://pay')) {
+      try {
+        const urlParams = new URLSearchParams(data.substring(data.indexOf('?')));
+        const pa = urlParams.get('pa') || '';
+        const pn = urlParams.get('pn') || '';
+        const am = urlParams.get('am') || '';
+        const tn = urlParams.get('tn') || '';
+
+        if (!pa) {
+          setError('Invalid QR: UPI ID (pa) missing.');
+          return;
+        }
+
+        setUpiData({ pa, pn, am, tn });
+        setPaymentAmount(am);
+        setPaymentNote(tn);
+        setStep('form');
+      } catch (err) {
+        setError('Error parsing UPI QR data.');
+      }
+    } else {
+      // Check if it's a raw VPA/UPI ID (e.g. name@bank)
+      const vpaRegex = /^[\w.\-_]+@[\w.\-_]+$/;
+      if (vpaRegex.test(data.trim())) {
+        setUpiData({
+          pa: data.trim(),
+          pn: data.trim().split('@')[0].toUpperCase(),
+          am: '',
+          tn: ''
+        });
+        setStep('form');
+      } else {
+        setError('Scanned data is not a valid UPI QR link. Data: ' + data.substring(0, 50));
+      }
+    }
+  };
+
+  // Toggle tab / Start camera accordingly
+  useEffect(() => {
+    if (isOpen && scanTab === 'camera' && step === 'scan') {
+      startCamera();
+    } else {
+      stopCamera();
+    }
+    return () => stopCamera();
+  }, [isOpen, scanTab, step]);
+
+  if (!isOpen) return null;
+
+  // Build the UPI link for execution
+  const upiUrl = `upi://pay?pa=${encodeURIComponent(upiData.pa)}&pn=${encodeURIComponent(upiData.pn)}&am=${encodeURIComponent(paymentAmount)}&cu=INR&tn=${encodeURIComponent(paymentNote || 'PayMe Link')}`;
+
+  const handleProceedPayment = (e) => {
+    e.preventDefault();
+    if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
+      setError('Please enter a valid positive amount.');
+      return;
+    }
+    setError('');
+
+    // Trigger redirection to UPI app
+    window.location.href = upiUrl;
+    
+    // Advance to display instructions/desktop QR code fallback
+    setStep('pay');
+  };
+
+  // Handle auto-fill back to console
+  const handleAutoFillConsole = () => {
+    if (onAutoFill) {
+      onAutoFill({
+        toAccount: upiData.pa,
+        amount: paymentAmount,
+        description: paymentNote || `UPI to ${upiData.pn}`
+      });
+    }
+    handleClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+      {/* Neo-Brutalist Modal Container */}
+      <div className="bg-[#FAF8F5] border-4 border-black w-full max-w-md shadow-[8px_8px_0px_0px_rgba(0,0,0,1)] relative flex flex-col max-h-[90vh] overflow-hidden">
+        
+        {/* Modal Header */}
+        <div className="bg-yellow-300 border-b-4 border-black p-4 flex justify-between items-center shrink-0">
+          <h3 className="text-lg font-black uppercase tracking-tight flex items-center gap-2">
+            <span className="bg-black text-white px-2 py-0.5 border border-black text-xs font-mono">UPI.EXE</span>
+            UPI QR SCANNER
+          </h3>
+          <button 
+            onClick={handleClose}
+            className="bg-black text-white hover:bg-red-500 hover:text-black border-2 border-black w-7 h-7 flex items-center justify-center font-black text-sm cursor-pointer shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] active:shadow-[1px_1px_0px_0px_rgba(0,0,0,1)]"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Modal Content Scrollable Area */}
+        <div className="p-5 overflow-y-auto flex-1 space-y-4">
+          
+          {/* Error Message Toast */}
+          {error && (
+            <div className="bg-rose-300 border-2 border-black p-3 text-xs font-mono font-bold text-black flex justify-between items-start">
+              <span>⚠️ {error}</span>
+              <button onClick={() => setError('')} className="font-extrabold ml-2 hover:text-red-800">✕</button>
+            </div>
+          )}
+
+          {/* STEP 1: SCANNING PHASE */}
+          {step === 'scan' && (
+            <div className="space-y-4">
+              {/* Tab Selector */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setScanTab('camera')}
+                  className={`flex-1 border-2 border-black py-2 font-mono text-xs font-bold uppercase cursor-pointer transition-all ${
+                    scanTab === 'camera' ? 'bg-black text-[#94FFD8] shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]' : 'bg-white text-black hover:bg-gray-100'
+                  }`}
+                >
+                  CAMERA SCAN
+                </button>
+                <button
+                  onClick={() => setScanTab('upload')}
+                  className={`flex-1 border-2 border-black py-2 font-mono text-xs font-bold uppercase cursor-pointer transition-all ${
+                    scanTab === 'upload' ? 'bg-black text-[#94FFD8] shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]' : 'bg-white text-black hover:bg-gray-100'
+                  }`}
+                >
+                  UPLOAD IMAGE
+                </button>
+              </div>
+
+              {scanTab === 'camera' ? (
+                <div className="space-y-3">
+                  {/* Camera view screen */}
+                  <div className="border-4 border-black bg-black aspect-video relative overflow-hidden flex items-center justify-center">
+                    <video 
+                      ref={videoRef}
+                      className="w-full h-full object-cover"
+                    />
+                    
+                    {/* Laser Scanner animation effect */}
+                    <div className="absolute inset-x-0 top-0 h-1 bg-[#FF76CE] shadow-[0_0_10px_#FF76CE] animate-pulse" style={{
+                      animation: 'scanLine 2.5s infinite linear',
+                      position: 'absolute'
+                    }} />
+
+                    {/* Scanning Target Box Overlays */}
+                    <div className="absolute border-2 border-dashed border-yellow-300 w-48 h-32 pointer-events-none opacity-70 flex items-center justify-center">
+                      <span className="text-[9px] font-mono text-yellow-300 uppercase tracking-widest bg-black/60 px-1 py-0.5">ALIGN UPI QR CODE</span>
+                    </div>
+
+                    <canvas ref={canvasRef} className="hidden" />
+                  </div>
+
+                  <p className="text-[10px] font-mono text-gray-500 text-center font-bold">
+                    Point your device camera at any standard UPI merchant QR code.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* File Upload Selector */}
+                  <div className="border-4 border-dashed border-black bg-amber-50 p-6 text-center flex flex-col items-center justify-center gap-3 relative cursor-pointer hover:bg-amber-100/50 transition-colors">
+                    <input 
+                      type="file" 
+                      accept="image/*"
+                      onChange={handleImageUpload}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <svg className="w-10 h-10 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    <span className="font-mono text-xs font-black uppercase">SELECT QR IMAGE FILE</span>
+                    <span className="text-[9px] font-mono text-gray-400 font-bold uppercase">PNG, JPG or WEBP formats supported</span>
+                  </div>
+
+                  <p className="text-[10px] font-mono text-gray-500 text-center font-bold">
+                    Take a screenshot/photo of a QR code or upload it from your library.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* STEP 2: DETAILS FORM */}
+          {step === 'form' && (
+            <form onSubmit={handleProceedPayment} className="space-y-4">
+              <span className="bg-black text-[#94FFD8] text-[9px] font-mono font-bold px-1.5 py-0.5 border border-black uppercase tracking-wider block w-max">
+                PAYEE DETAILS EXTRACTED
+              </span>
+
+              <div className="bg-white border-2 border-black p-3 space-y-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]">
+                <div className="flex justify-between items-center text-[10px] font-mono text-gray-500 font-bold uppercase">
+                  <span>Merchant/Payee:</span>
+                  <span className="bg-yellow-100 text-yellow-800 px-1 border border-yellow-300 text-[8px]">VERIFIED QR</span>
+                </div>
+                <div className="text-sm font-black text-black uppercase truncate">{upiData.pn || 'Unknown Merchant'}</div>
+                
+                <div className="text-[10px] font-mono text-gray-400 font-bold uppercase pt-1">UPI address / VPA:</div>
+                <div className="text-xs font-mono text-black break-all select-all font-bold">{upiData.pa}</div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Amount to Pay (₹):</label>
+                <input 
+                  type="number"
+                  required
+                  min="1"
+                  step="any"
+                  placeholder="Enter Amount"
+                  value={paymentAmount}
+                  onChange={(e) => setPaymentAmount(e.target.value)}
+                  className="w-full bg-white border-3 border-black p-2 font-black text-base focus:outline-none"
+                />
+
+                {/* Quick amount selectors */}
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {[50, 100, 500, 1000, 2000].map((amt) => (
+                    <button
+                      key={amt}
+                      type="button"
+                      onClick={() => setPaymentAmount(amt.toString())}
+                      className="border border-black bg-white hover:bg-yellow-200 px-3 py-1 font-mono text-xs font-bold shadow-[1px_1px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
+                    >
+                      ₹{amt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-black mb-1 font-mono">Note / Description (Optional):</label>
+                <input 
+                  type="text"
+                  placeholder="Lunch, shopping, rent etc."
+                  value={paymentNote}
+                  onChange={(e) => setPaymentNote(e.target.value)}
+                  className="w-full bg-white border-3 border-black p-2 font-semibold text-xs focus:outline-none"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStep('scan');
+                    setError('');
+                  }}
+                  className="border-2 border-black bg-white hover:bg-gray-100 text-black px-4 py-2.5 font-mono text-xs font-bold uppercase cursor-pointer"
+                >
+                  BACK
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 bg-black text-[#94FFD8] border-3 border-black py-2.5 font-extrabold uppercase tracking-wider text-xs shadow-[3px_3px_0px_0px_rgba(255,118,206,1)] hover:-translate-x-[1px] hover:-translate-y-[1px] hover:shadow-[4px_4px_0px_0px_rgba(255,118,206,1)] active:translate-x-[1px] active:translate-y-[1px] cursor-pointer"
+                >
+                  PROCEED TO PAY
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* STEP 3: PAY REDIRECT & FALLBACK PANEL */}
+          {step === 'pay' && (
+            <div className="space-y-4 text-center">
+              <span className="bg-black text-[#FF76CE] text-[9px] font-mono font-bold px-1.5 py-0.5 border border-black uppercase tracking-wider inline-block">
+                PAYMENT DISPATCHED / WAITING
+              </span>
+
+              <div className="space-y-3">
+                <p className="text-xs font-bold text-black uppercase">
+                  Redirecting to your mobile UPI Payment App...
+                </p>
+                <p className="text-[10px] text-gray-500 font-mono font-bold">
+                  (Google Pay, PhonePe, Paytm, or BHIM should open automatically on your mobile device)
+                </p>
+              </div>
+
+              {/* QR Code fallback for Desktop / Cross-device */}
+              <div className="bg-white border-3 border-black p-4 inline-block shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] mx-auto">
+                <p className="text-[9px] font-mono text-gray-500 font-bold uppercase pb-2">Desktop Fallback QR Code</p>
+                <img 
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(upiUrl)}`}
+                  alt="Payment QR Code"
+                  className="mx-auto border-2 border-black w-44 h-44"
+                />
+                <span className="text-[9px] font-mono text-black font-black uppercase block pt-2">₹ {parseFloat(paymentAmount).toFixed(2)} to {upiData.pn || 'Merchant'}</span>
+              </div>
+
+              <div className="space-y-2 max-w-xs mx-auto">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(upiUrl);
+                    alert("UPI URI payment link copied to clipboard!");
+                  }}
+                  className="w-full border-2 border-black bg-white hover:bg-gray-100 text-black py-1.5 font-mono text-xs font-bold uppercase cursor-pointer"
+                >
+                  COPY PAYMENT LINK
+                </button>
+
+                <button
+                  onClick={handleAutoFillConsole}
+                  className="w-full border-2 border-black bg-yellow-300 hover:bg-yellow-400 text-black py-2 font-mono text-xs font-black uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-y-[1px] cursor-pointer"
+                >
+                  AUTO-FILL CONSOLE FORM
+                </button>
+              </div>
+
+              <div className="pt-2 border-t-2 border-dashed border-black flex justify-between">
+                <button
+                  type="button"
+                  onClick={() => setStep('form')}
+                  className="border-2 border-black bg-white hover:bg-gray-100 text-black px-4 py-1.5 font-mono text-xs font-bold uppercase cursor-pointer"
+                >
+                  BACK TO FORM
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClose}
+                  className="border-2 border-black bg-black text-white hover:bg-red-500 hover:text-white px-4 py-1.5 font-mono text-xs font-bold uppercase cursor-pointer"
+                >
+                  CLOSE
+                </button>
+              </div>
+            </div>
+          )}
+
+        </div>
+
+      </div>
+
+      {/* Embedded CSS injection for animation within react component */}
+      <style dangerouslySetInnerHTML={{__html: `
+        @keyframes scanLine {
+          0% { top: 0%; }
+          50% { top: 100%; }
+          100% { top: 0%; }
+        }
+      `}} />
+    </div>
+  );
+}

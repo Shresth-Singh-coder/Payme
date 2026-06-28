@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { API_BASE_URL } from '../config';
+import QRScannerModal from './QRScannerModal';
 
 const API_BASE = `${API_BASE_URL}/api`;
 
@@ -28,6 +29,25 @@ export default function Home({ currentUser, onLogout }) {
   const [amount, setAmount] = useState('');
   const [category, setCategory] = useState('Transfer');
   const [description, setDescription] = useState('');
+
+  // QR Scanner Modal State
+  const [isQRModalOpen, setIsQRModalOpen] = useState(false);
+
+  // Handle QR scanner auto-fill callback
+  const handleQRAutoFill = ({ toAccount: scannedVpa, amount: scannedAmount, description: scannedDesc }) => {
+    setIsExternal(true);
+    setExternalAccount(scannedVpa);
+    setAmount(scannedAmount || '');
+    setCategory('Transfer');
+    setDescription(scannedDesc || '');
+    
+    // Attempt to pre-select a source account if none selected
+    if (!fromAccount && accounts.length > 0) {
+      setFromAccount(accounts[0]._id);
+    }
+    
+    setSuccess(`Auto-filled details for payment to ${scannedVpa}.`);
+  };
 
   // Transaction List State
   const [transactions, setTransactions] = useState([]);
@@ -516,9 +536,21 @@ export default function Home({ currentUser, onLogout }) {
             <span className="bg-black text-yellow-300 text-[10px] font-mono font-bold px-1.5 py-0.5 border border-black uppercase tracking-wider">
               LEDGER_POSTING
             </span>
-            <h2 className="text-2xl font-black uppercase mt-1.5 leading-none">
-              Transfer Funds
-            </h2>
+            <div className="flex justify-between items-center mt-1.5 mb-2">
+              <h2 className="text-2xl font-black uppercase leading-none">
+                Transfer Funds
+              </h2>
+              <button
+                type="button"
+                onClick={() => setIsQRModalOpen(true)}
+                className="bg-yellow-300 text-black hover:bg-black hover:text-[#94FFD8] border-2 border-black px-2.5 py-1.5 font-mono text-[10px] font-bold uppercase shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:translate-x-[1px] active:translate-y-[1px] cursor-pointer flex items-center gap-1.5"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                </svg>
+                SCAN QR
+              </button>
+            </div>
 
             <form onSubmit={handleMakeTransaction} className="mt-4 space-y-4">
               <div>
@@ -753,6 +785,11 @@ export default function Home({ currentUser, onLogout }) {
         </div>
       </div>
 
+      <QRScannerModal
+        isOpen={isQRModalOpen}
+        onClose={() => setIsQRModalOpen(false)}
+        onAutoFill={handleQRAutoFill}
+      />
     </div>
   );
 }
